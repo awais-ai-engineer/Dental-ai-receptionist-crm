@@ -1,13 +1,15 @@
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Header, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from sqlalchemy import select
 
 from app.api.deps import DB
 from app.models import Message
 from app.schemas.conversation import MessageCreate, PublicConversationCreate, PublicConversationRead, PublicMessageRead
 from app.services.conversations import add_message, create_public_conversation, get_public_conversation, request_handoff
+from app.services.providers import ProviderError, get_embedding_client, get_llm_client
+from app.services.rag import Answer, answer_question
 
 router = APIRouter(prefix="/reception/conversations", tags=["reception"])
 AccessToken = Annotated[str, Header(alias="X-Conversation-Token", min_length=32, max_length=128)]
@@ -35,3 +37,18 @@ async def create_public_message(conversation_id: UUID, payload: MessageCreate, t
 async def request_public_handoff(conversation_id: UUID, token: AccessToken, db: DB):
     item = await get_public_conversation(db, conversation_id, token)
     await request_handoff(db, item)
+
+
+@router.post("/{conversation_id}/ask", response_model=Answer)
+async def ask(conversation_id: UUID, payload: MessageCreate, token: AccessToken, db: DB,
+              embedding_client=Depends(get_embedding_client), llm_client=Depends(get_llm_client)):
+    item = await get_public_conversation(db, conversation_id, token)
+    await add_message(db, item, payload.content, "patient")
+    try:
+        result = await answer_question(db, item.clinic_id, payload.content, embedding_client, llm_client)
+    except ProviderError as exc:
+        raise HTTPException(exc.status_code, exc.detail) from exc
+    if result.requires_escalation:
+        await request_handoff(db, item)
+    await add_message(db, item, result.answer, "ai")
+    return result

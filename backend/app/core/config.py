@@ -20,10 +20,13 @@ class Settings(BaseSettings):
     llm_api_key: str = ""
     llm_model: str = ""
     embedding_provider: str = ""
+    embedding_api_key: str = ""
     embedding_model: str = ""
     embedding_dimension: int = Field(default=1536, gt=0)
     knowledge_chunk_size: int = Field(default=1200, ge=200, le=10000)
     knowledge_chunk_overlap: int = Field(default=180, ge=0, le=2000)
+    rag_max_distance: float = Field(default=0.45, ge=0, le=2)
+    rag_top_k: int = Field(default=5, ge=1, le=20)
     n8n_webhook_url: str = ""
     n8n_webhook_secret: str = ""
     telephony_provider: str = ""

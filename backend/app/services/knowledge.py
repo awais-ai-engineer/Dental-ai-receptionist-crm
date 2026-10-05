@@ -1,4 +1,4 @@
-import math
+﻿import math
 from dataclasses import dataclass
 from typing import Protocol
 from uuid import UUID
@@ -21,6 +21,7 @@ class EmbeddingClient(Protocol):
 class ChunkMatch:
     chunk_id: UUID
     document_id: UUID
+    document_title: str
     content: str
     metadata: dict
     distance: float
@@ -74,13 +75,35 @@ async def embed_document(db: AsyncSession, document: KnowledgeDocument, client: 
     return document
 
 
+async def process_document(db: AsyncSession, document: KnowledgeDocument, client: EmbeddingClient) -> KnowledgeDocument:
+    document_id = document.id
+    if document.status == "ready":
+        return document
+    if document.status == "processing":
+        raise HTTPException(409, "Document is already processing")
+    document.status = "processing"
+    document.error_message = None
+    await db.commit()
+    try:
+        return await embed_document(db, document, client)
+    except Exception as exc:
+        await db.rollback()
+        from app.services.providers import ProviderError
+        failed_document = await db.get(KnowledgeDocument, document_id)
+        if failed_document is not None:
+            failed_document.status = "failed"
+            failed_document.error_message = exc.detail if isinstance(exc, ProviderError) else "Embedding processing failed"
+            await db.commit()
+        raise
+
+
 async def search_chunks(db: AsyncSession, clinic_id: UUID, query_embedding: list[float], limit: int = 5) -> list[ChunkMatch]:
     if not 1 <= limit <= 100:
         raise ValueError("Limit must be between 1 and 100")
     vector = validate_embedding(query_embedding)
     distance = KnowledgeChunk.embedding.cosine_distance(vector)
-    rows = (await db.execute(select(KnowledgeChunk, distance.label("distance"))
+    rows = (await db.execute(select(KnowledgeChunk, KnowledgeDocument.title, distance.label("distance"))
         .join(KnowledgeDocument, (KnowledgeDocument.id == KnowledgeChunk.document_id) & (KnowledgeDocument.clinic_id == KnowledgeChunk.clinic_id))
         .where(KnowledgeChunk.clinic_id == clinic_id, KnowledgeDocument.status == "ready", KnowledgeChunk.embedding.is_not(None))
         .order_by(distance, KnowledgeChunk.id).limit(limit))).all()
-    return [ChunkMatch(chunk_id=chunk.id, document_id=chunk.document_id, content=chunk.content, metadata=chunk.metadata_json, distance=float(score)) for chunk, score in rows]
+    return [ChunkMatch(chunk_id=chunk.id, document_id=chunk.document_id, document_title=title, content=chunk.content, metadata=chunk.metadata_json, distance=float(score)) for chunk, title, score in rows]

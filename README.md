@@ -3,7 +3,7 @@ Production-style AI receptionist and CRM for dental clinics with appointment sch
 
 ## Backend status
 
-The backend implements authentication, clinic-scoped doctors and patients, weekly doctor availability, appointment scheduling, conversations, escalations, and a PostgreSQL/pgvector knowledge store. AI answers, automations, and analytics are planned for later passes.
+The backend implements authentication, clinic-scoped doctors and patients, weekly doctor availability, appointment scheduling, conversations, escalations, and a PostgreSQL/pgvector knowledge store with grounded AI answers. Automations and analytics are planned for later passes.
 
 ## Local setup (PowerShell)
 
@@ -38,7 +38,7 @@ The application does not create tables at startup; Alembic owns schema changes. 
 
 ## Conversations
 
-Staff use bearer authentication for `POST/GET /api/v1/conversations`, `GET/PATCH /api/v1/conversations/{id}`, `POST /api/v1/conversations/{id}/close`, and `GET/POST /api/v1/conversations/{id}/messages`. The list accepts `status`, `channel`, `patient_id`, `limit`, and `offset`. Staff messages are recorded as staff messages; this phase does not generate AI replies.
+Staff use bearer authentication for `POST/GET /api/v1/conversations`, `GET/PATCH /api/v1/conversations/{id}`, `POST /api/v1/conversations/{id}/close`, and `GET/POST /api/v1/conversations/{id}/messages`. The list accepts `status`, `channel`, `patient_id`, `limit`, and `offset`. Staff messages are recorded as staff messages. The separate `/ask` route generates grounded replies.
 
 An anonymous website visitor starts a chat with `POST /api/v1/reception/conversations` and JSON `{"clinic_slug":"your-clinic-slug"}`. The response contains a conversation ID and a random access token. Send that token in `X-Conversation-Token` when calling `GET/POST /api/v1/reception/conversations/{id}/messages`. Store the token privately in the visitor session; it is shown only once, and the database stores its hash. Public callers cannot access staff conversation routes or other conversations without the matching token.
 
@@ -52,9 +52,19 @@ Before production, add rate limiting to public conversation creation, public mes
 
 ## Knowledge base and vectors
 
-Authenticated staff use `POST/GET /api/v1/knowledge/documents`, `GET/PATCH/DELETE /api/v1/knowledge/documents/{id}`, and `GET /api/v1/knowledge/documents/{id}/chunks`. A create request accepts `title`, `source_type` (`manual`, `faq`, or `text`), and `content`. Text is normalized, split into ordered overlapping chunks, and stored in PostgreSQL. Documents remain `pending` until an embedding client supplies real vectors; the API does not invent embeddings or mark pending documents searchable. Deleting a document cascades to its chunks.
+Authenticated staff use `POST/GET /api/v1/knowledge/documents`, `GET/PATCH/DELETE /api/v1/knowledge/documents/{id}`, and `GET /api/v1/knowledge/documents/{id}/chunks`. A create request accepts `title`, `source_type` (`manual`, `faq`, or `text`), and `content`. Text is normalized, split into ordered overlapping chunks, and stored in PostgreSQL. Documents remain `pending` until processing supplies real vectors; the API does not invent embeddings or mark pending documents searchable. Deleting a document cascades to its chunks.
 
-The storage and search services use pgvector with clinic filtering and exact cosine distance. No approximate index is installed for the small demo dataset. `EMBEDDING_DIMENSION` defaults to 1536, matching migration `0004_knowledge_base`. Changing it requires a new schema migration; vector operations fail clearly if the setting and stored dimension differ. `EMBEDDING_PROVIDER` and `EMBEDDING_MODEL` are reserved for a future provider adapter. With no adapter, an embedding attempt returns a configuration error. Unit and PostgreSQL tests inject deterministic vectors without paid API calls. `KNOWLEDGE_CHUNK_SIZE` and `KNOWLEDGE_CHUNK_OVERLAP` control chunking.
+The storage and search services use pgvector with clinic filtering and exact cosine distance. No approximate index is installed for the small demo dataset. `EMBEDDING_DIMENSION` defaults to 1536, matching migration `0004_knowledge_base`. Changing it requires a new schema migration. Unit and PostgreSQL tests inject deterministic vectors without paid API calls. `KNOWLEDGE_CHUNK_SIZE` and `KNOWLEDGE_CHUNK_OVERLAP` control chunking.
+
+## Embeddings and grounded answers
+
+Set `EMBEDDING_PROVIDER=openrouter`, `EMBEDDING_MODEL` to an OpenRouter embedding model that supports 1536 dimensions, and `EMBEDDING_API_KEY` to its key. If `EMBEDDING_API_KEY` is empty, the adapter uses `LLM_API_KEY`. Set `LLM_PROVIDER=openrouter`, `LLM_MODEL` to a chat model, and `LLM_API_KEY` to an OpenRouter key. Keep keys in `.env`. No network call is made at startup. Missing settings return HTTP 503. Provider errors use safe messages without response bodies or credentials.
+
+An admin or receptionist can process one document with `POST /api/v1/knowledge/documents/{id}/process`, or all pending and failed documents with `POST /api/v1/knowledge/documents/process-pending`. Processing moves through `processing` to `ready`, or `failed` with an error message. A failed document can be retried. A ready document is returned without another embedding call. After seeding the demo documents, call `process-pending` with the staff bearer token to make them searchable.
+
+Staff can ask `POST /api/v1/knowledge/query` with `{"question":"What are your opening hours?"}`. A website visitor can ask `POST /api/v1/reception/conversations/{id}/ask` with `{"content":"What are your opening hours?"}` and their `X-Conversation-Token`. The public route persists the patient message first; on a successful answer it persists an AI reply and returns sources with actual document and chunk IDs. Provider failure leaves the patient message for staff review and does not create an AI reply. Explicit emergency phrases request handoff and return an urgent contact message without diagnosis. This phrase rule is narrow and is not a clinical triage classifier.
+
+Retrieval only uses ready documents from the current clinic. `RAG_TOP_K` defaults to 5 and `RAG_MAX_DISTANCE` to 0.45 cosine distance. When nothing passes the threshold, the service returns a fixed staff referral without calling the chat provider. Answers receive a grounding prompt, but model output is probabilistic; a human should review any public deployment, especially pricing or medical questions. This endpoint does not create bookings or make clinical decisions.
 
 To optionally load fictional Aves Dental Clinic hours, doctors, pricing, and policies, first register that clinic and find its slug in the database. Then run from `backend/`:
 
