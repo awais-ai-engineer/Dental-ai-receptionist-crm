@@ -3,7 +3,7 @@ Production-style AI receptionist and CRM for dental clinics with appointment sch
 
 ## Backend status
 
-The current backend pass implements authentication, clinic-scoped doctors and patients, weekly doctor availability, and appointment scheduling. AI, RAG, conversations, automations, analytics, and escalation are planned for later passes.
+The backend implements authentication, clinic-scoped doctors and patients, weekly doctor availability, appointment scheduling, persistent conversations and messages, and staff-managed escalation records. AI, RAG, automations, and analytics are planned for later passes.
 
 ## Local setup (PowerShell)
 
@@ -35,6 +35,20 @@ uvicorn app.main:app --reload
 The API documentation is at `http://localhost:8000/docs`. In another terminal, run tests with `python -m pytest` from `backend/`.
 
 The application does not create tables at startup; Alembic owns schema changes. `GET /api/v1/health` checks the API and `GET /api/v1/health/db` checks database connectivity.
+
+## Conversations
+
+Staff use bearer authentication for `POST/GET /api/v1/conversations`, `GET/PATCH /api/v1/conversations/{id}`, `POST /api/v1/conversations/{id}/close`, and `GET/POST /api/v1/conversations/{id}/messages`. The list accepts `status`, `channel`, `patient_id`, `limit`, and `offset`. Staff messages are recorded as staff messages; this phase does not generate AI replies.
+
+An anonymous website visitor starts a chat with `POST /api/v1/reception/conversations` and JSON `{"clinic_slug":"your-clinic-slug"}`. The response contains a conversation ID and a random access token. Send that token in `X-Conversation-Token` when calling `GET/POST /api/v1/reception/conversations/{id}/messages`. Store the token privately in the visitor session; it is shown only once, and the database stores its hash. Public callers cannot access staff conversation routes or other conversations without the matching token.
+
+## Escalations and handoff
+
+Staff can manage clinic-scoped escalations through `POST/GET /api/v1/escalations`, `GET/PATCH /api/v1/escalations/{id}`, and `POST /api/v1/escalations/{id}/acknowledge` or `/resolve`. Resolution requires acknowledgement first. Receptionists can resolve low and medium severity cases; admins and assigned doctors can resolve high and critical cases. Creating an escalation from a conversation marks that conversation as escalated in the same transaction. Staff can request handoff with `POST /api/v1/conversations/{id}/handoff`.
+
+A website visitor can request human handoff with `POST /api/v1/reception/conversations/{id}/handoff` and their `X-Conversation-Token`. This only marks the conversation as waiting for staff; public callers cannot choose an assignee or access escalation records. Recipient calculation uses active clinic staff records: low/medium goes to receptionists, high adds admins, and critical adds the assigned doctor's linked staff account when present. An internal `escalation.created` payload builder prepares data for future automation; this phase sends no notifications.
+
+Before production, add rate limiting to public conversation creation, public message reads and posts, and public handoff. Public conversation tokens currently have no expiry; add expiration and rotation as a separate security hardening change.
 
 ## PostgreSQL integration tests
 
