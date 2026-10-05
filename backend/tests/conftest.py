@@ -37,13 +37,13 @@ async def api_client(migrated_database):
 
     engine = create_async_engine(TEST_URL)
     async with engine.begin() as connection:
-        await connection.execute(text("TRUNCATE TABLE escalations, messages, conversations, appointments, doctor_availability, patients, doctors, staff_users, clinics CASCADE"))
+        await connection.execute(text("TRUNCATE TABLE knowledge_chunks, knowledge_documents, escalations, messages, conversations, appointments, doctor_availability, patients, doctors, staff_users, clinics CASCADE"))
     await engine.dispose()
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
         yield client
     engine = create_async_engine(TEST_URL)
     async with engine.begin() as connection:
-        await connection.execute(text("TRUNCATE TABLE escalations, messages, conversations, appointments, doctor_availability, patients, doctors, staff_users, clinics CASCADE"))
+        await connection.execute(text("TRUNCATE TABLE knowledge_chunks, knowledge_documents, escalations, messages, conversations, appointments, doctor_availability, patients, doctors, staff_users, clinics CASCADE"))
     await engine.dispose()
     await session_factory().kw["bind"].dispose()
     session_factory.cache_clear()

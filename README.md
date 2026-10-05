@@ -3,7 +3,7 @@ Production-style AI receptionist and CRM for dental clinics with appointment sch
 
 ## Backend status
 
-The backend implements authentication, clinic-scoped doctors and patients, weekly doctor availability, appointment scheduling, persistent conversations and messages, and staff-managed escalation records. AI, RAG, automations, and analytics are planned for later passes.
+The backend implements authentication, clinic-scoped doctors and patients, weekly doctor availability, appointment scheduling, conversations, escalations, and a PostgreSQL/pgvector knowledge store. AI answers, automations, and analytics are planned for later passes.
 
 ## Local setup (PowerShell)
 
@@ -49,6 +49,20 @@ Staff can manage clinic-scoped escalations through `POST/GET /api/v1/escalations
 A website visitor can request human handoff with `POST /api/v1/reception/conversations/{id}/handoff` and their `X-Conversation-Token`. This only marks the conversation as waiting for staff; public callers cannot choose an assignee or access escalation records. Recipient calculation uses active clinic staff records: low/medium goes to receptionists, high adds admins, and critical adds the assigned doctor's linked staff account when present. An internal `escalation.created` payload builder prepares data for future automation; this phase sends no notifications.
 
 Before production, add rate limiting to public conversation creation, public message reads and posts, and public handoff. Public conversation tokens currently have no expiry; add expiration and rotation as a separate security hardening change.
+
+## Knowledge base and vectors
+
+Authenticated staff use `POST/GET /api/v1/knowledge/documents`, `GET/PATCH/DELETE /api/v1/knowledge/documents/{id}`, and `GET /api/v1/knowledge/documents/{id}/chunks`. A create request accepts `title`, `source_type` (`manual`, `faq`, or `text`), and `content`. Text is normalized, split into ordered overlapping chunks, and stored in PostgreSQL. Documents remain `pending` until an embedding client supplies real vectors; the API does not invent embeddings or mark pending documents searchable. Deleting a document cascades to its chunks.
+
+The storage and search services use pgvector with clinic filtering and exact cosine distance. No approximate index is installed for the small demo dataset. `EMBEDDING_DIMENSION` defaults to 1536, matching migration `0004_knowledge_base`. Changing it requires a new schema migration; vector operations fail clearly if the setting and stored dimension differ. `EMBEDDING_PROVIDER` and `EMBEDDING_MODEL` are reserved for a future provider adapter. With no adapter, an embedding attempt returns a configuration error. Unit and PostgreSQL tests inject deterministic vectors without paid API calls. `KNOWLEDGE_CHUNK_SIZE` and `KNOWLEDGE_CHUNK_OVERLAP` control chunking.
+
+To optionally load fictional Aves Dental Clinic hours, doctors, pricing, and policies, first register that clinic and find its slug in the database. Then run from `backend/`:
+
+```powershell
+python -m app.demo.aves_knowledge --clinic-slug your-aves-clinic-slug
+```
+
+The seed is idempotent and creates pending documents only for a clinic named `Aves Dental Clinic`. It does not run at startup. Demo prices are fictional estimates, not clinical advice.
 
 ## PostgreSQL integration tests
 
