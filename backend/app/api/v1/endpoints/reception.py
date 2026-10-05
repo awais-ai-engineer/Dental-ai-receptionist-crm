@@ -10,9 +10,20 @@ from app.schemas.conversation import MessageCreate, PublicConversationCreate, Pu
 from app.services.conversations import add_message, create_public_conversation, get_public_conversation, request_handoff
 from app.services.providers import ProviderError, get_embedding_client, get_llm_client
 from app.services.rag import Answer, answer_question
+from app.services.receptionist import ReceptionistResponse, orchestrate
+from app.models import Conversation
+from pydantic import BaseModel, Field
 
 router = APIRouter(prefix="/reception/conversations", tags=["reception"])
 AccessToken = Annotated[str, Header(alias="X-Conversation-Token", min_length=32, max_length=128)]
+
+
+class ReceptionistMessage(BaseModel):
+    message: str = Field(min_length=1, max_length=10000)
+
+
+async def public_conversation(conversation_id: UUID, token: AccessToken, db: DB) -> Conversation:
+    return await get_public_conversation(db, conversation_id, token)
 
 
 @router.post("", response_model=PublicConversationRead, status_code=201)
@@ -51,4 +62,17 @@ async def ask(conversation_id: UUID, payload: MessageCreate, token: AccessToken,
     if result.requires_escalation:
         await request_handoff(db, item)
     await add_message(db, item, result.answer, "ai")
+    return result
+
+
+@router.post("/{conversation_id}/message", response_model=ReceptionistResponse)
+async def receptionist_message(payload: ReceptionistMessage, db: DB,
+                               conversation: Annotated[Conversation, Depends(public_conversation)],
+                               embedding_client=Depends(get_embedding_client), llm_client=Depends(get_llm_client)):
+    await add_message(db, conversation, payload.message, "patient")
+    try:
+        result = await orchestrate(db, conversation, payload.message, llm_client, embedding_client)
+    except ProviderError as exc:
+        raise HTTPException(exc.status_code, exc.detail) from exc
+    await add_message(db, conversation, result.answer, "ai")
     return result

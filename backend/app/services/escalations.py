@@ -80,6 +80,21 @@ async def create_escalation(db: AsyncSession, user: StaffUser, payload: Escalati
     return item
 
 
+async def create_public_escalation(db: AsyncSession, conversation: Conversation, severity: str, reason: str, summary: str | None) -> Escalation:
+    """Create a clinic-scoped AI escalation without granting staff assignment powers."""
+    if conversation.status == "closed":
+        raise HTTPException(409, "Conversation is closed")
+    await validate_links(db, conversation.clinic_id, conversation.patient_id)
+    item = Escalation(clinic_id=conversation.clinic_id, conversation_id=conversation.id,
+                      patient_id=conversation.patient_id, severity=severity, reason=reason,
+                      summary=summary, source="ai_receptionist", status="open")
+    conversation.status = "escalated"
+    db.add(item)
+    await db.commit()
+    await db.refresh(item)
+    return item
+
+
 async def update_escalation(db: AsyncSession, user: StaffUser, item: Escalation, payload: EscalationUpdate) -> Escalation:
     if item.status == "resolved":
         raise HTTPException(409, "Resolved escalation cannot be changed")

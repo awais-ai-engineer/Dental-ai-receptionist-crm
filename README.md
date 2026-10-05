@@ -66,6 +66,16 @@ Staff can ask `POST /api/v1/knowledge/query` with `{"question":"What are your op
 
 Retrieval only uses ready documents from the current clinic. `RAG_TOP_K` defaults to 5 and `RAG_MAX_DISTANCE` to 0.45 cosine distance. When nothing passes the threshold, the service returns a fixed staff referral without calling the chat provider. Answers receive a grounding prompt, but model output is probabilistic; a human should review any public deployment, especially pricing or medical questions. This endpoint does not create bookings or make clinical decisions.
 
+## Controlled AI receptionist tools
+
+`POST /api/v1/reception/conversations/{id}/message` accepts `{"message":"..."}` with the conversation's `X-Conversation-Token`. It stores the patient message once, runs a bounded tool-selection flow, stores one final AI response on success, and returns the response plus safe action metadata. The existing `/ask` route remains the knowledge-only RAG endpoint.
+
+The model receives schemas for eight allowlisted tools: clinic knowledge search, active doctor listing, available-slot search, appointment request creation, rescheduling, cancellation, human handoff, and escalation. Tool decisions are strict JSON validated with Pydantic. Unknown names, extra fields such as `clinic_id`, malformed arguments, and more than three tool steps are rejected or stopped. No SQL, dynamic imports, `eval`, or direct model database access is available.
+
+Trusted `clinic_id`, `conversation_id`, and linked `patient_id` values come from the token-validated conversation. Appointment changes require that linked patient and query by both clinic and patient. Booking and rescheduling reuse the appointment service and scheduling validation, including availability and overlap checks. AI-created bookings use `requested`; patient-facing wording says clinic confirmation is still required. Vague reschedule requests and booking requests without a preferred date or time do not mutate data. Public patient creation is intentionally absent; staff must link a verified patient record before appointment changes.
+
+Handoff reuses the conversation service and never accepts a staff assignee. Escalations reuse the escalation service entry point for public AI requests and cannot accept patient, clinic, staff, source, or assignment fields from the model. A narrow explicit-phrase emergency rule can raise severity, but it does not diagnose. Tool logs contain the tool name, conversation ID, clinic ID, and outcome without full message content or credentials.
+
 To optionally load fictional Aves Dental Clinic hours, doctors, pricing, and policies, first register that clinic and find its slug in the database. Then run from `backend/`:
 
 ```powershell
