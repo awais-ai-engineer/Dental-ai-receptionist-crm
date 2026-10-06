@@ -7,6 +7,7 @@ from sqlalchemy import or_, select
 from app.api.deps import DB, User, require_roles
 from app.models import Doctor, Patient, StaffUser
 from app.schemas.core import PatientIn, PatientOut, PatientPatch
+from app.services.outbox import queue_patient_created
 
 router = APIRouter(prefix="/patients", tags=["patients"])
 Manager = Annotated[StaffUser, Depends(require_roles("admin", "receptionist"))]
@@ -43,6 +44,8 @@ async def create_patient(payload: PatientIn, db: DB, user: Manager):
     await validate_preferred_doctor(db, user.clinic_id, payload.preferred_doctor_id)
     patient = Patient(clinic_id=user.clinic_id, **payload.model_dump())
     db.add(patient)
+    await db.flush()
+    await queue_patient_created(db, patient)
     await db.commit()
     await db.refresh(patient)
     return patient

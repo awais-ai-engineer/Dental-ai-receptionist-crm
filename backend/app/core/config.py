@@ -29,6 +29,9 @@ class Settings(BaseSettings):
     rag_top_k: int = Field(default=5, ge=1, le=20)
     n8n_webhook_url: str = ""
     n8n_webhook_secret: str = ""
+    n8n_webhook_enabled: bool = False
+    n8n_webhook_timeout_seconds: float = Field(default=10, gt=0, le=120)
+    outbox_max_attempts: int = Field(default=5, ge=1, le=20)
     telephony_provider: str = ""
     telephony_api_key: str = ""
 

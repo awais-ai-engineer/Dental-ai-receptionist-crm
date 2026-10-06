@@ -45,7 +45,11 @@ async def request_handoff(db: AsyncSession, conversation: Conversation) -> Conve
         raise HTTPException(409, "Conversation is closed")
     if conversation.status == "escalated":
         return conversation
+    if conversation.status == "waiting_for_staff":
+        return conversation
     conversation.status = "waiting_for_staff"
+    from app.services.outbox import queue_handoff_event
+    await queue_handoff_event(db, conversation)
     await db.commit()
     await db.refresh(conversation)
     return conversation

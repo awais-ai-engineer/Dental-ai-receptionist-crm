@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models import Appointment
 from app.schemas.core import AppointmentIn, Reschedule
 from app.services.scheduling import ACTIVE_STATUSES, validate_slot
+from app.services.outbox import queue_appointment_event
 
 
 async def get_appointment(db: AsyncSession, clinic_id: UUID, appointment_id: UUID, patient_id: UUID | None = None) -> Appointment:
@@ -25,6 +26,8 @@ async def create_appointment(db: AsyncSession, clinic_id: UUID, payload: Appoint
     item = Appointment(clinic_id=clinic_id, created_by=created_by, status=status, **payload.model_dump())
     db.add(item)
     try:
+        await db.flush()
+        await queue_appointment_event(db, item, "appointment.requested")
         await db.commit()
     except IntegrityError:
         await db.rollback()
@@ -37,10 +40,12 @@ async def reschedule_appointment(db: AsyncSession, item: Appointment, payload: R
     if item.status not in ACTIVE_STATUSES:
         raise HTTPException(409, "Appointment cannot be rescheduled")
     await validate_slot(db, item.clinic_id, item.doctor_id, item.patient_id, payload.scheduled_start, payload.scheduled_end, item.id)
+    previous_start = item.scheduled_start
     item.scheduled_start = payload.scheduled_start
     item.scheduled_end = payload.scheduled_end
     item.status = "requested"
     try:
+        await queue_appointment_event(db, item, "appointment.rescheduled", previous_start_time=previous_start.isoformat(), new_start_time=item.scheduled_start.isoformat())
         await db.commit()
     except IntegrityError:
         await db.rollback()
@@ -53,6 +58,19 @@ async def cancel_appointment(db: AsyncSession, item: Appointment) -> Appointment
     if item.status not in ACTIVE_STATUSES:
         raise HTTPException(409, "Appointment cannot be cancelled")
     item.status = "cancelled"
+    await queue_appointment_event(db, item, "appointment.cancelled")
+    await db.commit()
+    await db.refresh(item)
+    return item
+
+
+async def transition_appointment(db: AsyncSession, item: Appointment, allowed: tuple[str, ...], target: str) -> Appointment:
+    if item.status not in allowed:
+        raise HTTPException(409, "Invalid appointment status transition")
+    item.status = target
+    event_type = {"approved": "appointment.approved", "confirmed": "appointment.confirmed"}.get(target)
+    if event_type:
+        await queue_appointment_event(db, item, event_type)
     await db.commit()
     await db.refresh(item)
     return item

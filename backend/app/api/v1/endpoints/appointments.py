@@ -7,7 +7,7 @@ from sqlalchemy import select
 from app.api.deps import DB, User, require_roles
 from app.models import Appointment, StaffUser
 from app.schemas.core import AppointmentIn, AppointmentOut, AppointmentPatch, Reschedule
-from app.services.appointments import cancel_appointment, create_appointment as create_appointment_service, get_appointment, reschedule_appointment
+from app.services.appointments import cancel_appointment, create_appointment as create_appointment_service, get_appointment, reschedule_appointment, transition_appointment
 
 router = APIRouter(prefix="/appointments", tags=["appointments"])
 Manager = Annotated[StaffUser, Depends(require_roles("admin", "receptionist"))]
@@ -40,12 +40,7 @@ async def update_appointment(appointment_id: UUID, payload: AppointmentPatch, db
 
 async def transition(appointment_id: UUID, db: DB, user: StaffUser, allowed: tuple[str, ...], target: str) -> Appointment:
     item = await get_appointment(db, user.clinic_id, appointment_id)
-    if item.status not in allowed:
-        raise HTTPException(409, "Invalid appointment status transition")
-    item.status = target
-    await db.commit()
-    await db.refresh(item)
-    return item
+    return await transition_appointment(db, item, allowed, target)
 
 
 @router.post("/{appointment_id}/approve", response_model=AppointmentOut)

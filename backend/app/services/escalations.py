@@ -75,6 +75,9 @@ async def create_escalation(db: AsyncSession, user: StaffUser, payload: Escalati
         conversation.status = "escalated"
         if assigned_staff_id is not None:
             conversation.assigned_staff_id = assigned_staff_id
+    await db.flush()
+    from app.services.outbox import queue_escalation_event
+    await queue_escalation_event(db, item, "escalation.created")
     await db.commit()
     await db.refresh(item)
     return item
@@ -90,6 +93,9 @@ async def create_public_escalation(db: AsyncSession, conversation: Conversation,
                       summary=summary, source="ai_receptionist", status="open")
     conversation.status = "escalated"
     db.add(item)
+    await db.flush()
+    from app.services.outbox import queue_escalation_event
+    await queue_escalation_event(db, item, "escalation.created")
     await db.commit()
     await db.refresh(item)
     return item
@@ -135,6 +141,8 @@ async def acknowledge_escalation(db: AsyncSession, user: StaffUser, item: Escala
             conversation = await get_conversation(db, item.clinic_id, item.conversation_id)
             if conversation.assigned_staff_id is None:
                 conversation.assigned_staff_id = user.id
+    from app.services.outbox import queue_escalation_event
+    await queue_escalation_event(db, item, "escalation.acknowledged")
     await db.commit()
     await db.refresh(item)
     return item
@@ -147,6 +155,8 @@ async def resolve_escalation(db: AsyncSession, user: StaffUser, item: Escalation
         raise HTTPException(403, "High severity escalations require an admin or assigned doctor")
     item.status = "resolved"
     item.resolved_at = datetime.now(timezone.utc)
+    from app.services.outbox import queue_escalation_event
+    await queue_escalation_event(db, item, "escalation.resolved")
     await db.commit()
     await db.refresh(item)
     return item

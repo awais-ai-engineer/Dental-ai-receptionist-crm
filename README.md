@@ -76,6 +76,34 @@ Trusted `clinic_id`, `conversation_id`, and linked `patient_id` values come from
 
 Handoff reuses the conversation service and never accepts a staff assignee. Escalations reuse the escalation service entry point for public AI requests and cannot accept patient, clinic, staff, source, or assignment fields from the model. A narrow explicit-phrase emergency rule can raise severity, but it does not diagnose. Tool logs contain the tool name, conversation ID, clinic ID, and outcome without full message content or credentials.
 
+## Transactional outbox and n8n delivery
+
+Meaningful CRM changes insert an `outbox_events` row in the same PostgreSQL transaction as the business record. The supported events are `patient.created`, `appointment.requested`, `appointment.approved`, `appointment.confirmed`, `appointment.cancelled`, `appointment.rescheduled`, `conversation.handoff_requested`, `escalation.created`, `escalation.acknowledged`, and `escalation.resolved`. Payload builders select safe automation fields instead of serializing ORM objects. Webhook credentials, conversation tokens, JWTs, password hashes, and API keys are never included.
+
+Configure delivery with:
+
+```env
+N8N_WEBHOOK_ENABLED=true
+N8N_WEBHOOK_URL=https://your-n8n.example/webhook/aves-backend-events
+N8N_WEBHOOK_SECRET=replace-with-a-long-random-secret
+N8N_WEBHOOK_TIMEOUT_SECONDS=10
+OUTBOX_MAX_ATTEMPTS=5
+```
+
+When delivery is disabled, CRM operations still create pending events and continue normally. No delivery is reported as successful. An admin can deterministically process eligible events for their clinic with `POST /api/v1/outbox/process?limit=20`. This service uses PostgreSQL `FOR UPDATE SKIP LOCKED`, so concurrent workers do not send the same row simultaneously. Successful HTTP status codes are 200 through 299. Failures use bounded delays of 30 seconds, 1 minute, 2 minutes, 5 minutes, and 15 minutes, capped by `OUTBOX_MAX_ATTEMPTS`. A manual admin retry resets a failed event for another bounded attempt cycle while preserving its event ID.
+
+Every webhook body uses this envelope:
+
+```json
+{"event":"appointment.requested","event_id":"stable-uuid","clinic_id":"clinic-uuid","timestamp":"2026-10-06T12:00:00Z","data":{}}
+```
+
+The backend serializes the JSON canonically and sends `X-Aves-Event-ID`, `X-Aves-Timestamp`, and `X-Aves-Signature`. The signature is lowercase hexadecimal HMAC SHA-256 over `timestamp + "." + raw_request_body`. The n8n webhook at `/aves-backend-events` should calculate the same HMAC, compare it in constant time, validate the envelope, reject unknown event names, and deduplicate by `event_id` before its Switch node. Network ambiguity means at-least-once delivery is possible; n8n must keep event IDs it has already processed.
+
+Suggested n8n branches notify receptionists for appointment requests, patients as appointments progress, and use the escalation recipients calculated by the backend. n8n consumes events and sends notifications; it does not change authoritative appointment, escalation, clinic, or permission state. Recipient email addresses come from event data and are never hard-coded in a workflow.
+
+Staff can inspect clinic-scoped delivery state through `GET /api/v1/outbox` and `GET /api/v1/outbox/{event_id}`. The list supports `status`, `event_type`, `limit`, and `offset`. Only admins can run processing or `POST /api/v1/outbox/{event_id}/retry`; delivered events cannot be retried. Safe stored errors describe timeouts or HTTP status codes without response bodies, headers, signatures, or secrets.
+
 To optionally load fictional Aves Dental Clinic hours, doctors, pricing, and policies, first register that clinic and find its slug in the database. Then run from `backend/`:
 
 ```powershell

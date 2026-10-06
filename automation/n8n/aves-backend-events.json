@@ -1,0 +1,243 @@
+{
+  "name": "Aves Dental - Backend Event Automations",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "aves-backend-events",
+        "responseMode": "responseNode",
+        "options": { "rawBody": true }
+      },
+      "id": "0b05d30c-7a4f-44b0-a143-9db37bc7a001",
+      "name": "Backend Events Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.2,
+      "position": [-1320, 0],
+      "webhookId": "aves-backend-events"
+    },
+    {
+      "parameters": {
+        "jsCode": "const crypto = require('crypto');\nconst item = $input.first();\nconst headers = Object.fromEntries(Object.entries(item.json.headers || {}).map(([k, v]) => [k.toLowerCase(), String(v)]));\nconst signature = headers['x-aves-signature'] || '';\nconst signedAt = headers['x-aves-timestamp'] || '';\nconst headerEventId = headers['x-aves-event-id'] || '';\nconst reject = (statusCode, error) => [{ json: { valid: false, statusCode, error } }];\nif (!signature || !signedAt || !headerEventId) return reject(401, 'Missing webhook authentication headers');\nif (!/^[a-f0-9]{64}$/i.test(signature)) return reject(401, 'Invalid webhook signature');\nconst signedTime = Date.parse(signedAt);\nif (!Number.isFinite(signedTime) || Math.abs(Date.now() - signedTime) > 300000) return reject(401, 'Webhook timestamp is stale or invalid');\nlet rawBody;\ntry { rawBody = (await this.helpers.getBinaryDataBuffer(0, 'data')).toString('utf8'); } catch { return reject(400, 'Raw request body is unavailable'); }\nconst secret = $env.N8N_WEBHOOK_SECRET;\nif (!secret) throw new Error('Webhook secret is not configured');\nconst expected = crypto.createHmac('sha256', secret).update(`${signedAt}.${rawBody}`, 'utf8').digest('hex');\nif (!crypto.timingSafeEqual(Buffer.from(signature.toLowerCase(), 'hex'), Buffer.from(expected, 'hex'))) return reject(401, 'Invalid webhook signature');\nlet envelope;\ntry { envelope = JSON.parse(rawBody); } catch { return reject(400, 'Malformed JSON body'); }\nconst allowed = new Set(['patient.created','appointment.requested','appointment.approved','appointment.confirmed','appointment.cancelled','appointment.rescheduled','conversation.handoff_requested','escalation.created','escalation.acknowledged','escalation.resolved']);\nconst uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;\nif (!allowed.has(envelope.event) || !uuid.test(envelope.event_id || '') || !uuid.test(envelope.clinic_id || '') || !Number.isFinite(Date.parse(envelope.timestamp)) || !envelope.data || typeof envelope.data !== 'object' || Array.isArray(envelope.data)) return reject(400, 'Invalid event envelope');\nif (envelope.event_id !== headerEventId) return reject(400, 'Event ID header does not match body');\nreturn [{ json: { valid: true, event: envelope.event, event_id: envelope.event_id, clinic_id: envelope.clinic_id, timestamp: envelope.timestamp, data: envelope.data } }];"
+      },
+      "id": "0b05d30c-7a4f-44b0-a143-9db37bc7a002",
+      "name": "Verify Signature and Envelope",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-1090, 0]
+    },
+    {
+      "parameters": {
+        "conditions": { "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 2 }, "conditions": [{ "leftValue": "={{ $json.valid }}", "rightValue": true, "operator": { "type": "boolean", "operation": "true", "singleValue": true } }], "combinator": "and" },
+        "options": {}
+      },
+      "id": "0b05d30c-7a4f-44b0-a143-9db37bc7a003",
+      "name": "Signature Valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [-860, 0]
+    },
+    {
+      "parameters": { "respondWith": "json", "responseBody": "={{ { ok: false, error: $json.error } }}", "options": { "responseCode": "={{ $json.statusCode || 400 }}" } },
+      "id": "0b05d30c-7a4f-44b0-a143-9db37bc7a004",
+      "name": "Reject Invalid Event",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [-620, 220]
+    },
+    {
+      "parameters": {
+        "operation": "get",
+        "dataTableId": { "__rl": true, "value": "aves_event_dedupe", "mode": "name" },
+        "filters": { "conditions": [{ "keyName": "event_id", "condition": "eq", "keyValue": "={{ $json.event_id }}" }] },
+        "returnAll": false,
+        "limit": 1
+      },
+      "id": "0b05d30c-7a4f-44b0-a143-9db37bc7a005",
+      "name": "Check Event Deduplication",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1,
+      "position": [-620, -80],
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "conditions": { "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 2 }, "conditions": [{ "leftValue": "={{ Boolean($json.event_id) }}", "rightValue": true, "operator": { "type": "boolean", "operation": "true", "singleValue": true } }], "combinator": "and" },
+        "options": {}
+      },
+      "id": "0b05d30c-7a4f-44b0-a143-9db37bc7a006",
+      "name": "Already Processed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [-390, -80]
+    },
+    {
+      "parameters": { "respondWith": "json", "responseBody": "={{ { ok: true, event_id: $('Verify Signature and Envelope').first().json.event_id, status: 'duplicate' } }}", "options": { "responseCode": 200 } },
+      "id": "0b05d30c-7a4f-44b0-a143-9db37bc7a007",
+      "name": "Acknowledge Duplicate",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [-150, 80]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            { "conditions": { "options": { "caseSensitive": true, "typeValidation": "strict", "version": 2 }, "conditions": [{ "leftValue": "={{ $('Verify Signature and Envelope').first().json.event }}", "rightValue": "patient.created", "operator": { "type": "string", "operation": "equals" } }], "combinator": "and" }, "renameOutput": true, "outputKey": "patient.created" },
+            { "conditions": { "options": { "caseSensitive": true, "typeValidation": "strict", "version": 2 }, "conditions": [{ "leftValue": "={{ $('Verify Signature and Envelope').first().json.event }}", "rightValue": "appointment.requested", "operator": { "type": "string", "operation": "equals" } }], "combinator": "and" }, "renameOutput": true, "outputKey": "appointment.requested" },
+            { "conditions": { "options": { "caseSensitive": true, "typeValidation": "strict", "version": 2 }, "conditions": [{ "leftValue": "={{ $('Verify Signature and Envelope').first().json.event }}", "rightValue": "appointment.approved", "operator": { "type": "string", "operation": "equals" } }], "combinator": "and" }, "renameOutput": true, "outputKey": "appointment.approved" },
+            { "conditions": { "options": { "caseSensitive": true, "typeValidation": "strict", "version": 2 }, "conditions": [{ "leftValue": "={{ $('Verify Signature and Envelope').first().json.event }}", "rightValue": "appointment.confirmed", "operator": { "type": "string", "operation": "equals" } }], "combinator": "and" }, "renameOutput": true, "outputKey": "appointment.confirmed" },
+            { "conditions": { "options": { "caseSensitive": true, "typeValidation": "strict", "version": 2 }, "conditions": [{ "leftValue": "={{ $('Verify Signature and Envelope').first().json.event }}", "rightValue": "appointment.cancelled", "operator": { "type": "string", "operation": "equals" } }], "combinator": "and" }, "renameOutput": true, "outputKey": "appointment.cancelled" },
+            { "conditions": { "options": { "caseSensitive": true, "typeValidation": "strict", "version": 2 }, "conditions": [{ "leftValue": "={{ $('Verify Signature and Envelope').first().json.event }}", "rightValue": "appointment.rescheduled", "operator": { "type": "string", "operation": "equals" } }], "combinator": "and" }, "renameOutput": true, "outputKey": "appointment.rescheduled" },
+            { "conditions": { "options": { "caseSensitive": true, "typeValidation": "strict", "version": 2 }, "conditions": [{ "leftValue": "={{ $('Verify Signature and Envelope').first().json.event }}", "rightValue": "conversation.handoff_requested", "operator": { "type": "string", "operation": "equals" } }], "combinator": "and" }, "renameOutput": true, "outputKey": "conversation.handoff_requested" },
+            { "conditions": { "options": { "caseSensitive": true, "typeValidation": "strict", "version": 2 }, "conditions": [{ "leftValue": "={{ $('Verify Signature and Envelope').first().json.event }}", "rightValue": "escalation.created", "operator": { "type": "string", "operation": "equals" } }], "combinator": "and" }, "renameOutput": true, "outputKey": "escalation.created" },
+            { "conditions": { "options": { "caseSensitive": true, "typeValidation": "strict", "version": 2 }, "conditions": [{ "leftValue": "={{ $('Verify Signature and Envelope').first().json.event }}", "rightValue": "escalation.acknowledged", "operator": { "type": "string", "operation": "equals" } }], "combinator": "and" }, "renameOutput": true, "outputKey": "escalation.acknowledged" },
+            { "conditions": { "options": { "caseSensitive": true, "typeValidation": "strict", "version": 2 }, "conditions": [{ "leftValue": "={{ $('Verify Signature and Envelope').first().json.event }}", "rightValue": "escalation.resolved", "operator": { "type": "string", "operation": "equals" } }], "combinator": "and" }, "renameOutput": true, "outputKey": "escalation.resolved" }
+          ]
+        },
+        "options": { "fallbackOutput": "extra" }
+      },
+      "id": "0b05d30c-7a4f-44b0-a143-9db37bc7a008",
+      "name": "Switch Event Type",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [-140, -220]
+    },
+    {
+      "parameters": { "jsCode": "const e = $('Verify Signature and Envelope').first().json;\nconst d = e.data;\nconst to = [...new Set((d.recipients || []).map(r => r.email).filter(Boolean))].join(',');\nif (!to) throw new Error('No receptionist recipient supplied for appointment request');\nreturn [{ json: { to, send: true, subject: `New appointment request: ${d.patient_name || d.appointment_id}`, html: `<h2>New appointment request</h2><p><strong>Patient:</strong> ${d.patient_name || 'Not supplied'}</p><p><strong>Contact:</strong> ${d.patient_phone || d.patient_email || 'Not supplied'}</p><p><strong>Doctor:</strong> ${d.doctor_name || 'Not supplied'}</p><p><strong>Requested time:</strong> ${d.start_time}</p><p><strong>Status:</strong> ${d.status}</p><p><strong>Appointment ID:</strong> ${d.appointment_id}</p><p>This request is not confirmed.</p>` } }];" },
+      "id": "0b05d30c-7a4f-44b0-a143-9db37bc7a009",
+      "name": "Prepare Appointment Request Email",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [180, -500]
+    },
+    {
+      "parameters": { "jsCode": "const d = $('Verify Signature and Envelope').first().json.data;\nreturn [{ json: { to: d.patient_email || '', send: Boolean(d.patient_email), subject: 'Your appointment request was approved', html: `<h2>Appointment request approved</h2><p>Your request with ${d.doctor_name || 'the clinic'} for ${d.start_time} was approved and is awaiting final confirmation.</p><p>Appointment ID: ${d.appointment_id}</p>` } }];" },
+      "id": "0b05d30c-7a4f-44b0-a143-9db37bc7a010",
+      "name": "Prepare Approval Email",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [180, -380]
+    },
+    {
+      "parameters": { "jsCode": "const d = $('Verify Signature and Envelope').first().json.data;\nconst clinic = [d.clinic_name, d.clinic_phone, d.clinic_email].filter(Boolean).join(' · ');\nreturn [{ json: { to: d.patient_email || '', send: Boolean(d.patient_email), subject: 'Your appointment is confirmed', html: `<h2>Appointment confirmed</h2><p>Your appointment with ${d.doctor_name || 'the clinic'} is confirmed for ${d.start_time}.</p><p>Appointment ID: ${d.appointment_id}</p>${clinic ? `<p>${clinic}</p>` : ''}` } }];" },
+      "id": "0b05d30c-7a4f-44b0-a143-9db37bc7a011",
+      "name": "Prepare Confirmation Email",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [180, -260]
+    },
+    {
+      "parameters": { "jsCode": "const d = $('Verify Signature and Envelope').first().json.data;\nreturn [{ json: { to: d.patient_email || '', send: Boolean(d.patient_email), subject: 'Your appointment was cancelled', html: `<h2>Appointment cancelled</h2><p>Your appointment with ${d.doctor_name || 'the clinic'} at ${d.start_time} has status: ${d.status}.</p><p>Appointment ID: ${d.appointment_id}</p><p>Contact the clinic if you would like to request another time.</p>` } }];" },
+      "id": "0b05d30c-7a4f-44b0-a143-9db37bc7a012",
+      "name": "Prepare Cancellation Email",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [180, -140]
+    },
+    {
+      "parameters": { "jsCode": "const d = $('Verify Signature and Envelope').first().json.data;\nreturn [{ json: { to: d.patient_email || '', send: Boolean(d.patient_email), subject: 'Your appointment time was updated', html: `<h2>Appointment rescheduled</h2><p><strong>Doctor:</strong> ${d.doctor_name || 'Not supplied'}</p><p><strong>Previous time:</strong> ${d.previous_start_time}</p><p><strong>New time:</strong> ${d.new_start_time}</p><p><strong>Appointment ID:</strong> ${d.appointment_id}</p>` } }];" },
+      "id": "0b05d30c-7a4f-44b0-a143-9db37bc7a013",
+      "name": "Prepare Reschedule Email",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [180, -20]
+    },
+    {
+      "parameters": { "jsCode": "const d = $('Verify Signature and Envelope').first().json.data;\nconst to = [...new Set((d.recipients || []).map(r => r.email).filter(Boolean))].join(',');\nif (!to) throw new Error('No receptionist recipient supplied for handoff');\nreturn [{ json: { to, send: true, subject: `Patient conversation needs staff: ${d.conversation_id}`, html: `<h2>Human handoff requested</h2><p><strong>Conversation ID:</strong> ${d.conversation_id}</p><p><strong>Patient ID:</strong> ${d.patient_id || 'Not linked'}</p><p><strong>Source:</strong> ${d.source || 'Not supplied'}</p>` } }];" },
+      "id": "0b05d30c-7a4f-44b0-a143-9db37bc7a014",
+      "name": "Prepare Handoff Email",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [180, 100]
+    },
+    {
+      "parameters": { "jsCode": "const d = $('Verify Signature and Envelope').first().json.data;\nconst to = [...new Set((d.recipients || []).map(r => r.email).filter(Boolean))].join(',');\nif (!to) throw new Error('No escalation recipient supplied');\nconst urgent = d.severity === 'critical' ? 'CRITICAL: ' : '';\nreturn [{ json: { to, send: true, subject: `${urgent}Dental escalation ${d.escalation_id}`, html: `<h2>${urgent}Clinic escalation</h2><p><strong>Severity:</strong> ${d.severity}</p><p><strong>Reason:</strong> ${d.reason}</p>${d.summary ? `<p><strong>Summary:</strong> ${d.summary}</p>` : ''}<p><strong>Patient:</strong> ${d.patient?.name || 'Not supplied'} · ${d.patient?.phone || d.patient?.email || 'No contact supplied'}</p><p><strong>Conversation ID:</strong> ${d.conversation_id || 'None'}</p><p><strong>Escalation ID:</strong> ${d.escalation_id}</p>` } }];" },
+      "id": "0b05d30c-7a4f-44b0-a143-9db37bc7a015",
+      "name": "Prepare Escalation Email",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [180, 220]
+    },
+    {
+      "parameters": { "conditions": { "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 2 }, "conditions": [{ "leftValue": "={{ $json.send }}", "rightValue": true, "operator": { "type": "boolean", "operation": "true", "singleValue": true } }], "combinator": "and" }, "options": {} },
+      "id": "0b05d30c-7a4f-44b0-a143-9db37bc7a016",
+      "name": "Recipient Available?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [450, -140]
+    },
+    {
+      "parameters": { "fromEmail": "={{ $env.AVES_FROM_EMAIL }}", "toEmail": "={{ $json.to }}", "subject": "={{ $json.subject }}", "emailFormat": "html", "html": "={{ $json.html }}", "options": { "appendAttribution": false } },
+      "id": "0b05d30c-7a4f-44b0-a143-9db37bc7a017",
+      "name": "Send Notification Email",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [700, -220]
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "dataTableId": { "__rl": true, "value": "aves_event_dedupe", "mode": "name" },
+        "columns": { "mappingMode": "defineBelow", "value": { "event_id": "={{ $('Verify Signature and Envelope').first().json.event_id }}", "clinic_id": "={{ $('Verify Signature and Envelope').first().json.clinic_id }}", "event": "={{ $('Verify Signature and Envelope').first().json.event }}", "processed_at": "={{ $now.toISO() }}" }, "matchingColumns": [], "schema": [], "attemptToConvertTypes": false, "convertFieldsToString": false },
+        "options": {}
+      },
+      "id": "0b05d30c-7a4f-44b0-a143-9db37bc7a018",
+      "name": "Mark Event Processed",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1,
+      "position": [940, -80]
+    },
+    {
+      "parameters": { "respondWith": "json", "responseBody": "={{ { ok: true, event_id: $('Verify Signature and Envelope').first().json.event_id, status: 'processed' } }}", "options": { "responseCode": 200 } },
+      "id": "0b05d30c-7a4f-44b0-a143-9db37bc7a019",
+      "name": "Respond Processed",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [1180, -80]
+    },
+    {
+      "parameters": { "respondWith": "json", "responseBody": "={{ { ok: false, error: 'Unsupported event' } }}", "options": { "responseCode": 400 } },
+      "id": "0b05d30c-7a4f-44b0-a143-9db37bc7a020",
+      "name": "Reject Unsupported Event",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [180, 420]
+    }
+  ],
+  "connections": {
+    "Backend Events Webhook": { "main": [[{ "node": "Verify Signature and Envelope", "type": "main", "index": 0 }]] },
+    "Verify Signature and Envelope": { "main": [[{ "node": "Signature Valid?", "type": "main", "index": 0 }]] },
+    "Signature Valid?": { "main": [[{ "node": "Check Event Deduplication", "type": "main", "index": 0 }], [{ "node": "Reject Invalid Event", "type": "main", "index": 0 }]] },
+    "Check Event Deduplication": { "main": [[{ "node": "Already Processed?", "type": "main", "index": 0 }]] },
+    "Already Processed?": { "main": [[{ "node": "Acknowledge Duplicate", "type": "main", "index": 0 }], [{ "node": "Switch Event Type", "type": "main", "index": 0 }]] },
+    "Switch Event Type": { "main": [
+      [{ "node": "Mark Event Processed", "type": "main", "index": 0 }],
+      [{ "node": "Prepare Appointment Request Email", "type": "main", "index": 0 }],
+      [{ "node": "Prepare Approval Email", "type": "main", "index": 0 }],
+      [{ "node": "Prepare Confirmation Email", "type": "main", "index": 0 }],
+      [{ "node": "Prepare Cancellation Email", "type": "main", "index": 0 }],
+      [{ "node": "Prepare Reschedule Email", "type": "main", "index": 0 }],
+      [{ "node": "Prepare Handoff Email", "type": "main", "index": 0 }],
+      [{ "node": "Prepare Escalation Email", "type": "main", "index": 0 }],
+      [{ "node": "Mark Event Processed", "type": "main", "index": 0 }],
+      [{ "node": "Mark Event Processed", "type": "main", "index": 0 }],
+      [{ "node": "Reject Unsupported Event", "type": "main", "index": 0 }]
+    ] },
+    "Prepare Appointment Request Email": { "main": [[{ "node": "Recipient Available?", "type": "main", "index": 0 }]] },
+    "Prepare Approval Email": { "main": [[{ "node": "Recipient Available?", "type": "main", "index": 0 }]] },
+    "Prepare Confirmation Email": { "main": [[{ "node": "Recipient Available?", "type": "main", "index": 0 }]] },
+    "Prepare Cancellation Email": { "main": [[{ "node": "Recipient Available?", "type": "main", "index": 0 }]] },
+    "Prepare Reschedule Email": { "main": [[{ "node": "Recipient Available?", "type": "main", "index": 0 }]] },
+    "Prepare Handoff Email": { "main": [[{ "node": "Recipient Available?", "type": "main", "index": 0 }]] },
+    "Prepare Escalation Email": { "main": [[{ "node": "Recipient Available?", "type": "main", "index": 0 }]] },
+    "Recipient Available?": { "main": [[{ "node": "Send Notification Email", "type": "main", "index": 0 }], [{ "node": "Mark Event Processed", "type": "main", "index": 0 }]] },
+    "Send Notification Email": { "main": [[{ "node": "Mark Event Processed", "type": "main", "index": 0 }]] },
+    "Mark Event Processed": { "main": [[{ "node": "Respond Processed", "type": "main", "index": 0 }]] }
+  },
+  "pinData": {},
+  "settings": { "executionOrder": "v1" },
+  "active": false,
+  "versionId": "0b05d30c-7a4f-44b0-a143-9db37bc7ffff",
+  "meta": { "templateCredsSetupCompleted": false },
+  "tags": []
+}
